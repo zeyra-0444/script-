@@ -1,4 +1,13 @@
---// Services
+-- Teleport + persistent UI v2
+-- Perbaikan: UI tidak hilang saat respawn, teleport resume dari titik terakhir,
+-- dan godmode dikelola dengan aman (disconnect saat mati).
+
+if _G.TeleportScriptLoaded then
+    warn("Teleport script sudah jalan — abort duplicate run.")
+    return
+end
+_G.TeleportScriptLoaded = true
+
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 
@@ -10,133 +19,216 @@ local teleportLocations = {
     Vector3.new(-1700.21, 816.68, -1398.28),
     Vector3.new(-3222.09, 1715.10, -2601.32)
 }
+
 local teleportEnabled = false
 local delayOptions = {1, 2, 5, 10}
 local delayIndex = 2
 local teleportDelay = delayOptions[delayIndex]
+local currentIndex = 1 -- index of next teleport (will resume across respawns)
 
---// Functions
-local function teleportTo(position, hrp)
-    hrp.CFrame = CFrame.new(position)
+local guiName = "TeleportUI_V2"
+
+-- Keep reference to godmode connection so we can disconnect when needed
+local godConn = nil
+
+--// Helper: safe teleport
+local function safeTeleportTo(pos)
+    local char = player.Character
+    if not char or not char.Parent then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local ok, err = pcall(function()
+        hrp.CFrame = CFrame.new(pos)
+    end)
+    if not ok then
+        warn("Teleport failed:", err)
+        return false
+    end
+    return true
 end
 
-local function activateGodMode(humanoid)
-    humanoid.Health = humanoid.MaxHealth
-    humanoid.HealthChanged:Connect(function()
+--// Godmode management per-character
+local function attachGodModeToCharacter(character)
+    -- cleanup previous
+    if godConn and typeof(godConn) == "RBXScriptConnection" then
+        pcall(function() godConn:Disconnect() end)
+        godConn = nil
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        -- try wait short time (character might not fully load)
+        humanoid = character:WaitForChild("Humanoid", 5)
+        if not humanoid then return end
+    end
+
+    -- immediately set full health
+    if humanoid.Health and humanoid.MaxHealth then
+        humanoid.Health = humanoid.MaxHealth
+    end
+
+    -- connect HealthChanged while teleportEnabled is true
+    godConn = humanoid.HealthChanged:Connect(function()
+        if teleportEnabled and humanoid and humanoid.Parent then
+            -- protect with pcall (some games may block direct set)
+            pcall(function()
+                humanoid.Health = humanoid.MaxHealth
+            end)
+        end
+    end)
+
+    -- when humanoid dies, disconnect this godConn
+    humanoid.Died:Connect(function()
+        if godConn then
+            pcall(function() godConn:Disconnect() end)
+            godConn = nil
+        end
+    end)
+end
+
+--// UI Creation (create once, persistent across respawn)
+local function createOrGetUI()
+    local pg = player:WaitForChild("PlayerGui")
+    local existing = pg:FindFirstChild(guiName)
+    if existing then
+        -- find buttons if exist, return
+        local frame = existing:FindFirstChild("Frame")
+        local toggleBtn = frame and frame:FindFirstChild("ToggleBtn")
+        local delayBtn = frame and frame:FindFirstChild("DelayBtn")
+        return existing, frame, toggleBtn, delayBtn
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = guiName
+    gui.ResetOnSpawn = false -- CRITICAL: keep GUI on respawn
+    gui.Parent = pg
+
+    local frame = Instance.new("Frame", gui)
+    frame.Name = "Frame"
+    frame.Size = UDim2.new(0, 170, 0, 120)
+    frame.Position = UDim2.new(0, 20, 0, 200)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    frame.Active = true
+    frame.Draggable = true
+    frame.BorderSizePixel = 0
+
+    local corner = Instance.new("UICorner", frame)
+    corner.CornerRadius = UDim.new(0, 12)
+
+    local shadow = Instance.new("ImageLabel", frame)
+    shadow.Name = "Shadow"
+    shadow.ZIndex = 0
+    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+    shadow.Size = UDim2.new(1, 30, 1, 30)
+    shadow.Image = "rbxassetid://1316045217"
+    shadow.ImageColor3 = Color3.new(0, 0, 0)
+    shadow.ImageTransparency = 0.6
+    shadow.ScaleType = Enum.ScaleType.Slice
+    shadow.SliceCenter = Rect.new(10, 10, 118, 118)
+    shadow.BackgroundTransparency = 1
+
+    local title = Instance.new("TextLabel", frame)
+    title.Size = UDim2.new(1, 0, 0, 26)
+    title.Position = UDim2.new(0, 0, 0, 6)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 15
+    title.TextColor3 = Color3.fromRGB(255,255,255)
+    title.Text = "Teleport Menu"
+    title.TextXAlignment = Enum.TextXAlignment.Center
+
+    local toggleBtn = Instance.new("TextButton", frame)
+    toggleBtn.Name = "ToggleBtn"
+    toggleBtn.Size = UDim2.new(1, -20, 0, 44)
+    toggleBtn.Position = UDim2.new(0, 10, 0, 36)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    toggleBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.TextSize = 18
+    toggleBtn.Text = "Teleport: OFF"
+    local tcorner = Instance.new("UICorner", toggleBtn)
+    tcorner.CornerRadius = UDim.new(0, 8)
+
+    local delayBtn = Instance.new("TextButton", frame)
+    delayBtn.Name = "DelayBtn"
+    delayBtn.Size = UDim2.new(1, -20, 0, 28)
+    delayBtn.Position = UDim2.new(0, 10, 0, 88)
+    delayBtn.BackgroundColor3 = Color3.fromRGB(48,48,48)
+    delayBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    delayBtn.Font = Enum.Font.Gotham
+    delayBtn.TextSize = 15
+    delayBtn.Text = "Delay: " .. teleportDelay .. "s"
+    local dcorner = Instance.new("UICorner", delayBtn)
+    dcorner.CornerRadius = UDim.new(0, 8)
+
+    return gui, frame, toggleBtn, delayBtn
+end
+
+-- create UI & get buttons
+local gui, frame, toggleBtn, delayBtn = createOrGetUI()
+
+-- wire up buttons (safe attach; remove existing connections by replacing MouseButton1Click handlers)
+if toggleBtn then
+    toggleBtn.MouseButton1Click:Connect(function()
+        teleportEnabled = not teleportEnabled
         if teleportEnabled then
-            humanoid.Health = humanoid.MaxHealth
+            toggleBtn.Text = "Teleport: ON"
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+        else
+            toggleBtn.Text = "Teleport: OFF"
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
         end
     end)
 end
 
-local function startTeleportLoop(character)
-    local hrp = character:WaitForChild("HumanoidRootPart")
-    local humanoid = character:WaitForChild("Humanoid")
-    activateGodMode(humanoid)
+if delayBtn then
+    delayBtn.MouseButton1Click:Connect(function()
+        delayIndex = delayIndex + 1
+        if delayIndex > #delayOptions then delayIndex = 1 end
+        teleportDelay = delayOptions[delayIndex]
+        delayBtn.Text = "Delay: " .. teleportDelay .. "s"
+    end)
+end
 
-    task.spawn(function()
-        while true do
-            if teleportEnabled then
-                for _, pos in ipairs(teleportLocations) do
-                    if not teleportEnabled then break end
-                    teleportTo(pos, hrp)
-                    task.wait(teleportDelay)
+--// Main teleport loop (single global loop that survives respawns)
+task.spawn(function()
+    while true do
+        if teleportEnabled then
+            local loc = teleportLocations[currentIndex]
+            if loc then
+                local ok = safeTeleportTo(loc)
+                -- if teleport berhasil, advance index; kalau gagal, tunggu sebentar dan coba lagi
+                if ok then
+                    currentIndex = currentIndex + 1
+                    if currentIndex > #teleportLocations then currentIndex = 1 end
+                else
+                    -- belum ada HRP / karakter belum siap, jangan reset index, tunggu sedikit
                 end
-            else
-                task.wait(0.5)
             end
+
+            -- wait but allow early break if teleport disabled or character lost
+            local waited = 0
+            while waited < teleportDelay and teleportEnabled do
+                task.wait(0.10)
+                waited = waited + 0.10
+            end
+        else
+            task.wait(0.25)
         end
-    end)
-end
-
---// UI Setup
-local gui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
-gui.Name = "TeleportUI"
-
--- Main Frame
-local frame = Instance.new("Frame", gui)
-frame.Size = UDim2.new(0, 160, 0, 120)
-frame.Position = UDim2.new(0, 20, 0, 200)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-frame.Active = true
-frame.Draggable = true
-frame.BorderSizePixel = 0
-
--- Rounded Corner
-local uiCorner = Instance.new("UICorner", frame)
-uiCorner.CornerRadius = UDim.new(0, 12)
-
--- Drop Shadow
-local shadow = Instance.new("ImageLabel", frame)
-shadow.ZIndex = -1
-shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
-shadow.Size = UDim2.new(1, 20, 1, 20)
-shadow.Image = "rbxassetid://1316045217"
-shadow.ImageColor3 = Color3.new(0, 0, 0)
-shadow.ImageTransparency = 0.5
-shadow.ScaleType = Enum.ScaleType.Slice
-shadow.SliceCenter = Rect.new(10, 10, 118, 118)
-shadow.BackgroundTransparency = 1
-
--- Title
-local title = Instance.new("TextLabel", frame)
-title.Size = UDim2.new(1, 0, 0, 25)
-title.BackgroundTransparency = 1
-title.Text = "Teleport Menu"
-title.Font = Enum.Font.GothamBold
-title.TextSize = 16
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-
--- Toggle Button
-local toggleBtn = Instance.new("TextButton", frame)
-toggleBtn.Size = UDim2.new(1, -20, 0, 40)
-toggleBtn.Position = UDim2.new(0, 10, 0, 35)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
-toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 18
-toggleBtn.Text = "Teleport: OFF"
-local toggleCorner = Instance.new("UICorner", toggleBtn)
-toggleCorner.CornerRadius = UDim.new(0, 8)
-
--- Delay Button
-local delayBtn = Instance.new("TextButton", frame)
-delayBtn.Size = UDim2.new(1, -20, 0, 30)
-delayBtn.Position = UDim2.new(0, 10, 0, 80)
-delayBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-delayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-delayBtn.Font = Enum.Font.Gotham
-delayBtn.TextSize = 16
-delayBtn.Text = "Delay: " .. teleportDelay .. "s"
-local delayCorner = Instance.new("UICorner", delayBtn)
-delayCorner.CornerRadius = UDim.new(0, 8)
-
---// Button Logic
-toggleBtn.MouseButton1Click:Connect(function()
-    teleportEnabled = not teleportEnabled
-    if teleportEnabled then
-        toggleBtn.Text = "Teleport: ON"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
-    else
-        toggleBtn.Text = "Teleport: OFF"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
     end
 end)
 
-delayBtn.MouseButton1Click:Connect(function()
-    delayIndex = delayIndex + 1
-    if delayIndex > #delayOptions then delayIndex = 1 end
-    teleportDelay = delayOptions[delayIndex]
-    delayBtn.Text = "Delay: " .. teleportDelay .. "s"
-end)
-
---// Events
+-- attach godmode each time character spawns
 player.CharacterAdded:Connect(function(character)
-    character:WaitForChild("Humanoid")
-    startTeleportLoop(character)
+    -- attach godmode for new character (will auto-disconnect on death)
+    attachGodModeToCharacter(character)
 end)
 
+-- if character already exists when script loads
 if player.Character then
-    startTeleportLoop(player.Character)
+    attachGodModeToCharacter(player.Character)
 end
+
+-- finished
+print("TeleportUI v2 loaded — UI persistent across respawn, teleports will resume from index:", currentIndex)
