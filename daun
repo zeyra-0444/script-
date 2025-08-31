@@ -1,0 +1,142 @@
+--// Services
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+--// Config
+local teleportLocations = {
+    Vector3.new(-621.52, 250.26, -383.50),
+    Vector3.new(-1202.22, 261.63, -486.78),
+    Vector3.new(-1398.98, 578.32, -949.40),
+    Vector3.new(-1700.21, 816.68, -1398.28),
+    Vector3.new(-3222.09, 1715.10, -2601.32)
+}
+local teleportEnabled = false
+local delayOptions = {1, 2, 5, 10}
+local delayIndex = 2
+local teleportDelay = delayOptions[delayIndex]
+
+--// Functions
+local function teleportTo(position, hrp)
+    hrp.CFrame = CFrame.new(position)
+end
+
+local function activateGodMode(humanoid)
+    humanoid.Health = humanoid.MaxHealth
+    humanoid.HealthChanged:Connect(function()
+        if teleportEnabled then
+            humanoid.Health = humanoid.MaxHealth
+        end
+    end)
+end
+
+local function startTeleportLoop(character)
+    local hrp = character:WaitForChild("HumanoidRootPart")
+    local humanoid = character:WaitForChild("Humanoid")
+    activateGodMode(humanoid)
+
+    task.spawn(function()
+        while true do
+            if teleportEnabled then
+                for _, pos in ipairs(teleportLocations) do
+                    if not teleportEnabled then break end
+                    teleportTo(pos, hrp)
+                    task.wait(teleportDelay)
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+--// UI Setup
+local gui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+gui.Name = "TeleportUI"
+
+-- Main Frame
+local frame = Instance.new("Frame", gui)
+frame.Size = UDim2.new(0, 160, 0, 120)
+frame.Position = UDim2.new(0, 20, 0, 200)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+frame.Active = true
+frame.Draggable = true
+frame.BorderSizePixel = 0
+
+-- Rounded Corner
+local uiCorner = Instance.new("UICorner", frame)
+uiCorner.CornerRadius = UDim.new(0, 12)
+
+-- Drop Shadow
+local shadow = Instance.new("ImageLabel", frame)
+shadow.ZIndex = -1
+shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+shadow.Size = UDim2.new(1, 20, 1, 20)
+shadow.Image = "rbxassetid://1316045217"
+shadow.ImageColor3 = Color3.new(0, 0, 0)
+shadow.ImageTransparency = 0.5
+shadow.ScaleType = Enum.ScaleType.Slice
+shadow.SliceCenter = Rect.new(10, 10, 118, 118)
+shadow.BackgroundTransparency = 1
+
+-- Title
+local title = Instance.new("TextLabel", frame)
+title.Size = UDim2.new(1, 0, 0, 25)
+title.BackgroundTransparency = 1
+title.Text = "Teleport Menu"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+-- Toggle Button
+local toggleBtn = Instance.new("TextButton", frame)
+toggleBtn.Size = UDim2.new(1, -20, 0, 40)
+toggleBtn.Position = UDim2.new(0, 10, 0, 35)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 18
+toggleBtn.Text = "Teleport: OFF"
+local toggleCorner = Instance.new("UICorner", toggleBtn)
+toggleCorner.CornerRadius = UDim.new(0, 8)
+
+-- Delay Button
+local delayBtn = Instance.new("TextButton", frame)
+delayBtn.Size = UDim2.new(1, -20, 0, 30)
+delayBtn.Position = UDim2.new(0, 10, 0, 80)
+delayBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+delayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+delayBtn.Font = Enum.Font.Gotham
+delayBtn.TextSize = 16
+delayBtn.Text = "Delay: " .. teleportDelay .. "s"
+local delayCorner = Instance.new("UICorner", delayBtn)
+delayCorner.CornerRadius = UDim.new(0, 8)
+
+--// Button Logic
+toggleBtn.MouseButton1Click:Connect(function()
+    teleportEnabled = not teleportEnabled
+    if teleportEnabled then
+        toggleBtn.Text = "Teleport: ON"
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    else
+        toggleBtn.Text = "Teleport: OFF"
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    end
+end)
+
+delayBtn.MouseButton1Click:Connect(function()
+    delayIndex = delayIndex + 1
+    if delayIndex > #delayOptions then delayIndex = 1 end
+    teleportDelay = delayOptions[delayIndex]
+    delayBtn.Text = "Delay: " .. teleportDelay .. "s"
+end)
+
+--// Events
+player.CharacterAdded:Connect(function(character)
+    character:WaitForChild("Humanoid")
+    startTeleportLoop(character)
+end)
+
+if player.Character then
+    startTeleportLoop(player.Character)
+end
